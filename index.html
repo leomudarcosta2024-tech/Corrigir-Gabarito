@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner Gabarito com Grade Guia</title>
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="cvPronto();" type="text/javascript"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background-color: #222; color: #fff; margin: 0; padding: 20px; }
+        
+        #config-painel { background-color: #333; padding: 15px; border-radius: 8px; display: inline-block; margin-bottom: 20px; max-width: 90%; }
+        #inputGabarito { padding: 10px; font-size: 16px; border-radius: 4px; border: 1px solid #555; width: 80%; max-width: 300px; text-align: center; text-transform: uppercase; }
+
+        #camera-container { position: relative; display: inline-block; margin-bottom: 15px; max-width: 100%; }
+        video, canvas { display: block; max-width: 100%; border-radius: 8px; background-color: #000; }
+
+        /* --- O QUADRICULADO VERDE COM BORDA GROSSA (UI) --- */
+        #guia-scanner {
+            position: absolute;
+            top: 15%; left: 30%; width: 40%; height: 70%;
+            /* ALTERAÇÃO AQUI: Aumentada a espessura de 3px para 8px */
+            border: 8px solid #00ff00; 
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); 
+            pointer-events: none; 
+            border-radius: 4px;
+            overflow: hidden;
+
+            /* Mágica do CSS para criar a grade guia (linhas internas continuam finas) */
+            background-image: 
+                linear-gradient(to bottom, rgba(0, 255, 0, 0.3) 1px, transparent 1px),
+                linear-gradient(to right, rgba(0, 255, 0, 0.3) 1px, transparent 1px);
+            background-size: 100% calc(100% / 11), calc(100% / 6) 100%;
+        }
+
+        /* Destaque visual para as áreas de margem na grade */
+        #guia-scanner::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0;
+            width: calc(100% / 6); /* Primeira coluna de margem */
+            height: 100%;
+            background-color: rgba(0, 255, 0, 0.05);
+            border-right: 1px solid rgba(0, 255, 0, 0.5);
+        }
+        #guia-scanner::after {
+            content: "";
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%;
+            height: calc(100% / 11); /* Primeira linha de margem */
+            background-color: rgba(0, 255, 0, 0.05);
+            border-bottom: 1px solid rgba(0, 255, 0, 0.5);
+        }
+
+        button { padding: 15px 30px; font-size: 18px; font-weight: bold; background-color: #28a745; color: white; border: none; border-radius: 8px; cursor: pointer; margin: 5px; }
+        button:disabled { background-color: #555; color: #888; cursor: not-allowed; }
+        #resultado { margin-top: 20px; padding: 15px; background-color: #333; border-radius: 8px; font-size: 16px; text-align: left; display: inline-block; min-width: 300px;}
+        .res-item { padding: 8px; border-bottom: 1px solid #555; display: flex; justify-content: space-between; }
+        .correto { color: #00ff00; font-weight: bold; }
+        .errado { color: #ff4444; font-weight: bold; }
+        .anulada { color: #ffcc00; font-weight: bold; }
+        .placar { font-size: 24px; font-weight: bold; color: #00ff00; text-align: center; margin-top: 15px; padding-top: 10px; border-top: 2px solid #555; }
+    </style>
+</head>
+<body>
+
+    <h2>Corretor Inteligente com Grade</h2>
+    
+    <div id="config-painel">
+        <label for="inputGabarito"><strong>Gabarito Oficial (10 Questões):</strong></label><br><br>
+        <input type="text" id="inputGabarito" placeholder="Ex: ABCDABCDAA" maxlength="30">
+    </div>
+
+    <p>Alinhe a borda da folha com a linha verde grossa.<br>Deixe as áreas escurecidas da grade em branco.</p>
+    
+    <div id="camera-container">
+        <video id="camera" autoplay playsinline></video>
+        <div id="guia-scanner"></div>
+        <canvas id="canvas" style="display: none;"></canvas>
+    </div>
+    
+    <br>
+    <button id="btnCapturar" disabled>Carregando OpenCV...</button>
+
+    <div id="resultado">Aguarde o carregamento da biblioteca...</div>
+
+    <script>
+        const video = document.getElementById('camera');
+        const canvas = document.getElementById('canvas');
+        const guiaScanner = document.getElementById('guia-scanner');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const btnCapturar = document.getElementById('btnCapturar');
+        const divResultado = document.getElementById('resultado');
+        const inputGabarito = document.getElementById('inputGabarito');
+
+        let streaming = false;
+        let opencvCarregado = false;
+
+        function cvPronto() {
+            opencvCarregado = true;
+            btnCapturar.innerText = "Escanear Prova";
+            btnCapturar.disabled = false;
+            divResultado.innerText = "Câmera pronta.";
+            iniciarCamera();
+        }
+
+        function iniciarCamera() {
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+            .then(function(stream) {
+                video.srcObject = stream;
+                video.play();
+                streaming = true;
+            })
+            .catch(function(err) {
+                divResultado.innerHTML = "<span style='color:#ff4444;'>Erro ao acessar a câmera.</span>";
+            });
+        }
+
+        btnCapturar.addEventListener('click', () => {
+            if (!streaming || !opencvCarregado) return;
+
+            if (video.style.display !== 'none') {
+                let vW = video.videoWidth;
+                let vH = video.videoHeight;
+
+                let cropX = vW * 0.30;  
+                let cropY = vH * 0.15;   
+                let cropW = vW * 0.40;   
+                let cropH = vH * 0.70;   
+
+                canvas.width = cropW;
+                canvas.height = cropH;
+
+                ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+                video.style.display = 'none';
+                guiaScanner.style.display = 'none';
+                canvas.style.display = 'block';
+                
+                btnCapturar.innerText = "Escanear Novo Aluno";
+                
+                identificarRespostas();
+            } else {
+                video.style.display = 'block';
+                guiaScanner.style.display = 'block';
+                canvas.style.display = 'none';
+                btnCapturar.innerText = "Escanear Prova";
+                divResultado.innerText = "Câmera pronta.";
+            }
+        });
+
+        function identificarRespostas() {
+            divResultado.innerText = "Processando imagem e corrigindo...";
+
+            let rawGabarito = inputGabarito.value.toUpperCase().replace(/[^A-D]/g, '');
+            let gabaritoOficial = rawGabarito.split('');
+            let modoCorrecao = gabaritoOficial.length > 0;
+
+            let src = cv.imread(canvas);
+            let gray = new cv.Mat();
+            let blur = new cv.Mat();
+            let thresh = new cv.Mat();
+            
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+            let ksize = new cv.Size(5, 5);
+            cv.GaussianBlur(gray, blur, ksize, 0, 0, cv.BORDER_DEFAULT);
+
+            cv.threshold(blur, thresh, 40, 255, cv.THRESH_BINARY_INV);
+
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+            cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let manchasValidas = [];
+            let areaTotalCanvas = canvas.width * canvas.height;
+            let limiteAreaMaxima = areaTotalCanvas * 0.05; 
+
+            for (let i = 0; i < contours.size(); ++i) {
+                let cnt = contours.get(i);
+                let area = cv.contourArea(cnt);
+
+                if (area > 40 && area < limiteAreaMaxima) {
+                    let rect = cv.boundingRect(cnt);
+                    
+                    if (rect.width > canvas.width * 0.30 || rect.height > canvas.height * 0.15) {
+                        continue; 
+                    }
+
+                    let centroX = rect.x + (rect.width / 2);
+                    let centroY = rect.y + (rect.height / 2);
+
+                    manchasValidas.push({ rect: rect, cx: centroX, cy: centroY });
+                }
+            }
+
+            manchasValidas.sort((a, b) => a.cy - b.cy);
+
+            let linhasY = [];
+            let limiteAgrupamento = (canvas.height / 11) * 0.5; 
+
+            manchasValidas.forEach(m => {
+                if (linhasY.length === 0 || Math.abs(m.cy - linhasY[linhasY.length - 1]) > limiteAgrupamento) {
+                    linhasY.push(m.cy); 
+                }
+            });
+
+            const letrasPossiveis = ['MARGEM_ESQ', 'NUMERO', 'A', 'B', 'C', 'D'];
+            
+            let respostasAluno = {};
+            for (let q = 1; q <= 10; q++) {
+                respostasAluno[q] = []; 
+            }
+
+            manchasValidas.forEach(m => {
+                let indexLinha = 0;
+                let menorDistancia = 9999;
+                
+                for (let l = 0; l < linhasY.length; l++) {
+                    let dist = Math.abs(m.cy - linhasY[l]);
+                    if (dist < menorDistancia) {
+                        menorDistancia = dist;
+                        indexLinha = l;
+                    }
+                }
+
+                let numeroQuestao = indexLinha + 1;
+
+                let indexColuna = Math.floor((m.cx / canvas.width) * 6);
+                indexColuna = Math.min(Math.max(indexColuna, 0), 5);
+                
+                let tipoMancha = letrasPossiveis[indexColuna];
+
+                let corInutil = new cv.Scalar(100, 100, 100, 255); 
+                let corNumero = new cv.Scalar(255, 100, 0, 255); 
+                let corResposta = new cv.Scalar(0, 255, 0, 255); 
+
+                let p1 = new cv.Point(m.rect.x, m.rect.y);
+                let p2 = new cv.Point(m.rect.x + m.rect.width, m.rect.y + m.rect.height);
+
+                if (tipoMancha === 'MARGEM_ESQ') {
+                    cv.rectangle(src, p1, p2, corInutil, 1, cv.LINE_8, 0);
+                } else if (tipoMancha === 'NUMERO') {
+                    cv.rectangle(src, p1, p2, corNumero, 2, cv.LINE_8, 0);
+                } else {
+                    if (numeroQuestao <= 10) {
+                        respostasAluno[numeroQuestao].push(tipoMancha);
+                        
+                        cv.rectangle(src, p1, p2, corResposta, 2, cv.LINE_8, 0);
+                        let texto = `${numeroQuestao}-${tipoMancha}`;
+                        let origemTexto = new cv.Point(m.rect.x, m.rect.y - 5);
+                        cv.putText(src, texto, origemTexto, cv.FONT_HERSHEY_SIMPLEX, 0.6, corResposta, 2, cv.LINE_AA);
+                    }
+                }
+            });
+
+            cv.imshow('canvas', src);
+
+            let htmlResultado = `<strong>Resultados da Leitura:</strong><br><br>`;
+            let acertos = 0;
+            let totalCorrigidas = 0;
+
+            for (let q = 1; q <= 10; q++) {
+                let respostasDestaQuestao = respostasAluno[q];
+                respostasDestaQuestao.sort(); 
+                
+                let textoResposta = respostasDestaQuestao.length === 0 ? "Em Branco" : respostasDestaQuestao.join(", ");
+                let statusAvaliacao = "";
+
+                if (modoCorrecao && gabaritoOficial[q - 1]) {
+                    totalCorrigidas++;
+                    let certa = gabaritoOficial[q - 1];
+
+                    if (respostasDestaQuestao.length === 1 && respostasDestaQuestao[0] === certa) {
+                        statusAvaliacao = `<span class="correto">✓ Correto</span>`;
+                        acertos++;
+                    } else if (respostasDestaQuestao.length > 1) {
+                        statusAvaliacao = `<span class="anulada">⚠ Anulada (Era ${certa})</span>`;
+                    } else {
+                        statusAvaliacao = `<span class="errado">✗ Errado (Era ${certa})</span>`;
+                    }
+                }
+
+                htmlResultado += `<div class="res-item">
+                                    <span>Q${q}: <strong>${textoResposta}</strong></span> 
+                                    <span>${statusAvaliacao}</span>
+                                  </div>`;
+            }
+
+            if (modoCorrecao) {
+                htmlResultado += `<div class="placar">Nota: ${acertos} / ${totalCorrigidas}</div>`;
+            }
+            
+            divResultado.innerHTML = htmlResultado;
+
+            src.delete(); gray.delete(); blur.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
+        }
+    </script>
+</body>
+</html>
